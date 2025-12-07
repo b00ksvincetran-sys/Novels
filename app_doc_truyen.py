@@ -60,50 +60,68 @@ st.set_page_config(
 # Nút bấm ở dưới sẽ tìm đến cái id="trang_chu" này để nhảy lên
 st.markdown('<div id="trang_chu"></div>', unsafe_allow_html=True)
 
-# --- 4. CSS TÙY CHỈNH ---
+# --- CSS TÙY CHỈNH (Đã tối ưu Mobile) ---
 def local_css(font_family):
     st.markdown(f"""
     <style>
+        /* 1. Cấu hình Container chính */
         .paper-container {{
             background-color: var(--bg-color);
             color: var(--text-color);
-            padding: 30px;
+            padding: 30px; /* Mặc định cho PC */
             border-radius: 8px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             border: 1px solid rgba(0,0,0,0.05);
             margin-bottom: 20px;
         }}
+
+        /* 2. Cấu hình Font chữ */
         .content-text p {{
             font-family: {font_family}; 
             font-size: var(--font-size);
-            line-height: 1.8;
+            line-height: 1.6;
             text-align: justify;
-            margin-bottom: 1.2em;
+            margin-bottom: 1em;
             text-indent: 2em;
         }}
-        /* Nút Lên đầu trang đẹp */
-        .scroll-btn {{
-            display: block;
-            text-align: center;
-            width: 100%;
-            padding: 12px;
-            background-color: #f0f2f6;
-            color: #31333F;
-            border-radius: 8px;
-            text-decoration: none;
+        
+        /* 3. TỐI ƯU RIÊNG CHO ĐIỆN THOẠI (Mobile) */
+        @media (max-width: 768px) {{
+            /* Thu hẹp lề của toàn bộ trang web */
+            .block-container {{
+                padding-top: 1rem !important; /* Đẩy nội dung lên sát mép trên */
+                padding-left: 0.5rem !important;
+                padding-right: 0.5rem !important;
+                padding-bottom: 2rem !important;
+            }}
+            
+            /* Thu hẹp lề của tờ giấy */
+            .paper-container {{
+                padding: 15px !important; /* Giảm padding giấy */
+                border-radius: 4px;
+            }}
+            
+            /* Chỉnh tiêu đề nhỏ lại chút */
+            h2 {{
+                font-size: 1.5rem !important;
+                margin-bottom: 10px !important;
+            }}
+            
+            /* Nút bấm gọn hơn */
+            .stButton button {{
+                height: 40px !important;
+                font-size: 14px !important;
+            }}
+        }}
+
+        /* 4. Ẩn các thành phần thừa của Streamlit */
+        [data-testid="stDecoration"] {{display: none;}} /* Ẩn vạch màu trên cùng */
+        [data-testid="stHeader"] {{background-color: rgba(0,0,0,0);}} /* Header trong suốt */
+        footer {{visibility: hidden;}} /* Ẩn footer 'Made with Streamlit' */
+        
+        .stButton button {{
             font-weight: bold;
-            border: 1px solid #ccc;
-            margin-top: 10px;
         }}
-        .scroll-btn:hover {{
-            background-color: #e0e2e6;
-            color: #31333F;
-        }}
-        /* Ẩn Decoration */
-        [data-testid="stDecoration"] {{display: none;}}
-        footer {{visibility: hidden;}}
-        .block-container {{padding-top: 2rem;}}
-        .stButton button {{font-weight: bold;}}
     </style>
     """, unsafe_allow_html=True)
 
