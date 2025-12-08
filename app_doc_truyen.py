@@ -50,8 +50,28 @@ cursor.execute("SELECT id, title FROM chapters ORDER BY id ASC")
 all_chapters = cursor.fetchall()
 chapter_ids = [chap[0] for chap in all_chapters]
 
+# --- 🔥 FIX: LƯU TRẠNG THÁI VÀO URL 🔥 ---
+# 1. Lấy tham số từ URL (nếu có)
+query_params = st.query_params
+url_chap_id = query_params.get("chap", None)
+
+# 2. Khởi tạo Session State
 if 'current_chap_id' not in st.session_state:
-    st.session_state['current_chap_id'] = chapter_ids[0]
+    # Nếu URL có số chương -> Dùng số đó
+    if url_chap_id and int(url_chap_id) in chapter_ids:
+        st.session_state['current_chap_id'] = int(url_chap_id)
+    # Nếu không -> Mới dùng chương 1
+    else:
+        st.session_state['current_chap_id'] = chapter_ids[0]
+
+# 3. Hàm cập nhật URL mỗi khi đổi chương
+def update_url(chap_id):
+    st.query_params["chap"] = chap_id
+
+# Sửa lại hàm go_to_chap để gọi update_url
+def go_to_chap(chap_id):
+    st.session_state['current_chap_id'] = chap_id
+    update_url(chap_id) # <-- Thêm dòng này
 
 current_id = st.session_state['current_chap_id']
 current_chap_data = next((item for item in all_chapters if item[0] == current_id), None)
