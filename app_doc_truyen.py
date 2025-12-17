@@ -1,35 +1,52 @@
 import streamlit as st
 import psycopg2
 import os
-import json  # <--- BỔ SUNG THƯ VIỆN NÀY
+import json
 import google.generativeai as genai
 
 # --- 1. XỬ LÝ CẤU HÌNH ---
 def get_config():
     supabase_url = None
     api_key = None
+    # Ưu tiên lấy từ file config local
     try:
         from Config_local_supabase_Novels import SUPABASE_URL as local_url
         from Config_local_supabase_Novels import GEMINI_API_KEY as local_key
         supabase_url = local_url
         api_key = local_key
     except ImportError: pass
+    
+    # Nếu không có file local, lấy từ Secrets (dùng cho Streamlit Cloud)
     if not supabase_url:
         try: supabase_url = st.secrets["SUPABASE_URL"]
         except: pass
     if not api_key:
         try: api_key = st.secrets["GEMINI_API_KEY"]
         except: pass
+        
     return supabase_url, api_key
 
 SUPABASE_URL, API_KEY = get_config()
-if not SUPABASE_URL: st.stop()
+if not SUPABASE_URL: 
+    st.error("Chưa cấu hình Database URL!")
+    st.stop()
 
+# --- [FIX QUAN TRỌNG] QUẢN LÝ KẾT NỐI AN TOÀN ---
 @st.cache_resource
 def get_connection():
+    """Tạo kết nối mới và lưu vào cache"""
     return psycopg2.connect(SUPABASE_URL)
 
+# Lấy kết nối từ cache
 conn = get_connection()
+
+# KIỂM TRA SỨC KHỎE KẾT NỐI
+# Nếu kết nối đã bị đóng (closed != 0), xóa cache và kết nối lại ngay lập tức
+if conn.closed != 0:
+    st.cache_resource.clear()
+    conn = get_connection()
+
+# Bây giờ an toàn để lấy cursor
 cursor = conn.cursor()
 
 # --- 2. HÀM CẬP NHẬT URL KIỂU MỚI ---
@@ -38,8 +55,13 @@ def update_url(novel_slug, chap_index):
     st.query_params["chuong"] = str(chap_index)
 
 # --- 3. LẤY DANH SÁCH TRUYỆN ---
-cursor.execute("SELECT id, title, slug FROM novels ORDER BY title ASC")
-all_novels = cursor.fetchall()
+try:
+    cursor.execute("SELECT id, title, slug FROM novels ORDER BY title ASC")
+    all_novels = cursor.fetchall()
+except psycopg2.Error:
+    # Phòng trường hợp rớt mạng giữa chừng
+    st.cache_resource.clear()
+    st.rerun()
 
 if not all_novels:
     st.warning("Chưa có truyện nào!")
@@ -97,31 +119,67 @@ st.set_page_config(page_title=page_title, page_icon="📖", layout="centered", i
 st.markdown('<div id="trang_chu"></div>', unsafe_allow_html=True)
 
 # --- CSS & JS ---
+# --- CSS & JS ---
 def local_css(font_family):
     st.markdown(f"""
     <style>
-        .paper-container {{ background-color: var(--bg-color); color: var(--text-color); padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border: 1px solid rgba(0,0,0,0.05); margin-bottom: 20px; }}
-        /* Tăng khoảng cách dòng và thụt đầu dòng để dễ đọc hơn */
-        .content-text p {{ font-family: {font_family}; font-size: var(--font-size); line-height: 2.0; text-align: justify; margin-bottom: 1.5em; text-indent: 2em; }}
-        .scroll-btn {{ display: block; text-align: center; width: 100%; padding: 12px; background-color: #f0f2f6; color: #31333F; border-radius: 8px; text-decoration: none; font-weight: bold; border: 1px solid #ccc; margin-top: 10px; }}
-        [data-testid="stDecoration"] {{display: none;}} footer {{visibility: hidden;}} .block-container {{padding-top: 2rem;}} .stButton button {{font-weight: bold;}}
+        /* Khung giấy: Màu nền, đổ bóng nhẹ */
+        .paper-container {{ 
+            background-color: var(--bg-color); 
+            color: var(--text-color); 
+            padding: 40px; 
+            border-radius: 8px; 
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1); 
+            border: 1px solid rgba(0,0,0,0.05); 
+            margin-bottom: 20px; 
+        }}
+        
+        /* Nội dung truyện: Tinh chỉnh chuẩn quốc tế */
+        .content-text p {{ 
+            font-family: {font_family}; 
+            font-size: var(--font-size); 
+            
+            /* [THAY ĐỔI QUAN TRỌNG TẠI ĐÂY] */
+            line-height: 1.6;        /* Chuẩn quốc tế (Medium/Kindle): 1.6 thay vì 2.0 */
+            margin-bottom: 1.2em;    /* Khoảng cách đoạn vừa phải hơn */
+            
+            text-align: justify;     /* Căn đều 2 bên cho đẹp mắt */
+            text-indent: 2em;        /* Thụt đầu dòng */
+        }}
+        
+        /* Nút cuộn lên đầu trang */
+        .scroll-btn {{ 
+            display: block; 
+            text-align: center; 
+            width: 100%; 
+            padding: 12px; 
+            background-color: #f0f2f6; 
+            color: #31333F; 
+            border-radius: 8px; 
+            text-decoration: none; 
+            font-weight: bold; 
+            border: 1px solid #ccc; 
+            margin-top: 10px; 
+        }}
+        
+        /* Ẩn các thành phần thừa của Streamlit */
+        [data-testid="stDecoration"] {{display: none;}} 
+        footer {{visibility: hidden;}} 
+        .block-container {{padding-top: 2rem;}} 
+        .stButton button {{font-weight: bold;}}
     </style>
     """, unsafe_allow_html=True)
 
-# --- 7. LOGIC HÀM (CÓ BỔ SUNG HÀM LÀM SẠCH JSON) ---
+# --- 7. LOGIC HÀM ---
 
-# [MỚI] Hàm này giúp tách nội dung truyện ra khỏi chuỗi JSON
 def clean_content(text):
     if not text: return ""
     try:
-        # Thử parse JSON
         data = json.loads(text)
-        # Nếu là JSON object, lấy value của key 'content_edit' hoặc 'content'
         if isinstance(data, dict):
             return data.get("content_edit", data.get("content", ""))
         return str(data)
     except json.JSONDecodeError:
-        # Nếu lỗi parse (tức là text thường do người sửa tay), trả về nguyên gốc
         return text
 
 def change_chap(new_idx):
@@ -137,9 +195,13 @@ def change_novel():
 
 def save_chapter(chap_id, content):
     try:
+        # Kiểm tra kết nối trước khi lưu
+        if conn.closed != 0:
+            st.cache_resource.clear()
+            st.rerun()
+            
         conn.commit()
         with conn.cursor() as cur:
-            # Khi lưu tay, ta lưu string thuần, không cần bọc JSON nữa cho dễ sửa sau này
             cur.execute("UPDATE chapters SET content_edit = %s WHERE id = %s", (content, chap_id))
             conn.commit()
         st.toast("✅ Đã lưu!", icon="💾")
@@ -150,7 +212,6 @@ def ai_rewrite(text):
     try:
         genai.configure(api_key=API_KEY)
         model = genai.GenerativeModel('models/gemini-2.5-flash')
-        # Ép AI trả về text thuần để đỡ phải parse lại
         res = model.generate_content(f"Viết lại văn phong Tiên Hiệp mượt mà. Chỉ trả về nội dung truyện, không trả về JSON, không lời dẫn:\n{text}")
         return res.text.strip()
     except Exception as e: return f"Lỗi AI: {e}"
@@ -197,7 +258,7 @@ with st.sidebar:
         st.divider()
         theme = st.radio("Màu nền:", ["Sáng", "Giấy (Vàng)", "Đêm (Tối)"], index=1)
         font = st.radio("Font:", ["Có chân", "Không chân"], horizontal=True)
-        size = st.slider("Cỡ chữ:", 14, 30, 22) # Tăng mặc định lên 22 cho dễ đọc
+        size = st.slider("Cỡ chữ:", 14, 30, 22)
         
         bg, txt = ("#fdf6e3", "#2c2c2c") if theme == "Giấy (Vàng)" else ("#1a1a1a", "#d4d4d4") if theme == "Đêm (Tối)" else ("#ffffff", "#212121")
         font_style = "'Merriweather', serif" if font == "Có chân" else "'Arial', sans-serif"
@@ -205,19 +266,15 @@ with st.sidebar:
         st.markdown(f"<style>:root {{--bg-color: {bg}; --text-color: {txt}; --font-size: {size}px;}}</style>", unsafe_allow_html=True)
         local_css(font_style)
 
-# --- 9. HIỂN THỊ NỘI DUNG (ĐÃ SỬA ĐỂ HIỂN THỊ ĐẸP) ---
+# --- 9. HIỂN THỊ NỘI DUNG ---
 cursor.execute("SELECT title, content, content_edit FROM chapters WHERE id = %s", (real_chap_id,))
 data = cursor.fetchone()
 
 if data:
     title, raw, edited_db = data
     
-    # [QUAN TRỌNG] Làm sạch dữ liệu trước khi hiển thị
-    # Nếu có bản edit thì ưu tiên, nếu không dùng bản raw
-    # Dùng hàm clean_content để loại bỏ vỏ JSON nếu có
     final_content_to_show = clean_content(edited_db) if (edited_db and len(edited_db) > 50) else clean_content(raw)
 
-    # Nút điều hướng
     has_prev = current_chap_idx > 1
     has_next = current_chap_idx < len(list_indexes)
 
@@ -231,8 +288,6 @@ if data:
             change_chap(current_chap_idx + 1); st.rerun()
 
         if final_content_to_show:
-            # Tách đoạn văn bản và bọc vào thẻ <p> để CSS căn chỉnh lề
-            # Xử lý xuống dòng: Thay thế \n bằng thẻ đóng mở p
             paragraphs = final_content_to_show.replace('\\n', '\n').split('\n')
             html_content = "".join([f"<p>{p.strip()}</p>" for p in paragraphs if p.strip()])
             
@@ -258,11 +313,9 @@ if data:
         with cR:
             with st.form("edit"):
                 st.subheader("Bản Dịch/Edit")
-                # Load nội dung đã làm sạch vào ô sửa
                 new = st.text_area("Nội dung", value=final_content_to_show, height=520)
                 if st.form_submit_button("💾 LƯU NỘI DUNG", type="primary", use_container_width=True): 
                     save_chapter(real_chap_id, new)
-                    # Sau khi lưu xong thì reload lại trang để cập nhật text sạch
                     st.rerun()
             
             if st.button("🤖 AI Viết Lại (Gemini)", use_container_width=True):
