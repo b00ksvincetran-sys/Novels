@@ -308,8 +308,11 @@ with st.sidebar:
     is_editor = st.toggle("🛠️ Biên Tập", value=False)
     
     if not is_editor:
-        read_mode = st.radio("Chế độ:", ["📖 Lật trang (Mobile)", "📜 Cuộn dọc (Web)"], index=0)
-        font_sz = st.slider("Cỡ chữ:", 14, 26, 19)
+        # [FIX] Thêm key để Streamlit nhớ lựa chọn của người dùng khi load lại trang
+        read_mode = st.radio("Chế độ:", ["📖 Lật trang (Tay Trái)", "📜 Cuộn dọc (Web)"], index=0, key="reading_mode_select")
+        
+        # [FIX QUAN TRỌNG] Thêm key="font_size_setting" để không bị reset về 19
+        font_sz = st.slider("Cỡ chữ:", 14, 26, 19, key="font_size_setting")
 
     st.write("---")
     
