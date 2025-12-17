@@ -37,24 +37,28 @@ if conn.closed != 0: st.cache_resource.clear(); conn = get_connection()
 cursor = conn.cursor()
 
 # ==============================================================================
-# 2. HÀM HỖ TRỢ & LOGIC
+# 2. HÀM LOGIC CỐT LÕI (SYNC STATE)
 # ==============================================================================
 def update_url(novel_slug, chap_index):
     st.query_params["truyen"] = novel_slug
     st.query_params["chuong"] = str(chap_index)
 
 def change_chap(new_idx):
+    """Đổi chương -> Reset trang con -> Update URL"""
     st.session_state['current_chap_idx'] = new_idx
+    st.session_state['sub_page'] = 0 
     try:
         slug = novel_id_to_slug[st.session_state['current_novel_id']]
         update_url(slug, new_idx)
     except: pass
 
 def change_novel():
+    """Đổi truyện -> Reset về chương 1 -> Update URL"""
     new_slug = st.session_state.sb_novel_select
     new_id = novel_slug_to_id[new_slug]
     st.session_state['current_novel_id'] = new_id
     st.session_state['current_chap_idx'] = 1 
+    st.session_state['sub_page'] = 0
     update_url(new_slug, 1)
 
 def clean_content(text):
@@ -70,30 +74,19 @@ def clean_content(text):
     return text
 
 def paginate_text_to_json(text, words_per_page=150):
-    """
-    Cắt text thành JSON.
-    [FIX]: Giảm xuống 150 từ/trang để an toàn cho màn hình nhỏ.
-    """
     if not text: return json.dumps(["<p>(Chưa có nội dung)</p>"])
-    
     paragraphs = text.replace('\\n', '\n').split('\n')
     pages = []
     current_page = ""
     current_word_count = 0
-    
     for p in paragraphs:
         p = p.strip()
         if not p: continue
         words_in_p = len(p.split())
-        
         if current_word_count + words_in_p > words_per_page and current_word_count > 0:
-            pages.append(current_page)
-            current_page = f"<p>{p}</p>"
-            current_word_count = words_in_p
+            pages.append(current_page); current_page = f"<p>{p}</p>"; current_word_count = words_in_p
         else:
-            current_page += f"<p>{p}</p>"
-            current_word_count += words_in_p
-            
+            current_page += f"<p>{p}</p>"; current_word_count += words_in_p
     if current_page: pages.append(current_page)
     return json.dumps(pages)
 
@@ -116,8 +109,9 @@ def ai_rewrite(text):
     except Exception as e: return f"Lỗi AI: {e}"
 
 # ==============================================================================
-# 3. SETUP DỮ LIỆU
+# 3. LOAD DATA (SINGLE SOURCE OF TRUTH)
 # ==============================================================================
+# A. Load Novels
 try:
     cursor.execute("SELECT id, title, slug FROM novels ORDER BY title ASC")
     all_novels = cursor.fetchall()
@@ -128,231 +122,171 @@ if not all_novels: st.warning("Chưa có truyện!"); st.stop()
 novel_id_to_slug = {n[0]: n[2] for n in all_novels}
 novel_slug_to_id = {n[2]: n[0] for n in all_novels}
 novel_id_to_title = {n[0]: n[1] for n in all_novels}
+novel_slugs_list = list(novel_slug_to_id.keys())
 
+# B. Determine Current Novel (Priority: URL > Session > Default)
 params = st.query_params
 url_slug = params.get("truyen", None)
 current_novel_id = novel_slug_to_id.get(url_slug, all_novels[0][0])
 
-if 'current_novel_id' not in st.session_state or st.session_state['current_novel_id'] != current_novel_id:
+# Cập nhật Session State cho Novel
+if 'current_novel_id' not in st.session_state:
     st.session_state['current_novel_id'] = current_novel_id
+else:
+    # Nếu URL thay đổi, ưu tiên URL
+    if url_slug and url_slug in novel_slug_to_id:
+        st.session_state['current_novel_id'] = novel_slug_to_id[url_slug]
 
-# Lấy danh sách chương
-cursor.execute("SELECT id, chapter_index, title FROM chapters WHERE novel_id = %s ORDER BY chapter_index ASC", (current_novel_id,))
+# C. Load Chapters of Current Novel
+curr_nov_id = st.session_state['current_novel_id']
+cursor.execute("SELECT id, chapter_index, title FROM chapters WHERE novel_id = %s ORDER BY chapter_index ASC", (curr_nov_id,))
 all_chapters = cursor.fetchall()
+
 if not all_chapters: st.warning("Truyện rỗng."); st.stop()
 
 chap_idx_to_id = {c[1]: c[0] for c in all_chapters}
 chap_idx_to_title = {c[1]: c[2] for c in all_chapters}
-list_indexes = list(chap_idx_to_id.keys()) # Danh sách index thực tế (VD: 1, 2, 5, 6...)
+list_indexes = list(chap_idx_to_id.keys())
 
-# Current Chapter Logic
+# D. Determine Current Chapter
 url_chap = params.get("chuong", None)
 if url_chap and url_chap.isdigit() and int(url_chap) in list_indexes:
-    current_chap_idx = int(url_chap)
+    initial_chap = int(url_chap)
 elif 'current_chap_idx' in st.session_state:
-    current_chap_idx = st.session_state['current_chap_idx']
+    initial_chap = st.session_state['current_chap_idx']
 else:
-    current_chap_idx = list_indexes[0]
+    initial_chap = list_indexes[0]
 
-# [FIX] Đảm bảo current_chap_idx luôn hợp lệ
-if current_chap_idx not in list_indexes: current_chap_idx = list_indexes[0]
-st.session_state['current_chap_idx'] = current_chap_idx
+# Validate
+if initial_chap not in list_indexes: initial_chap = list_indexes[0]
+st.session_state['current_chap_idx'] = initial_chap 
 
-real_chap_id = chap_idx_to_id[current_chap_idx]
-page_title = f"Chương {current_chap_idx} | {novel_id_to_title[current_novel_id]}"
-
+# E. Metadata
+real_chap_id = chap_idx_to_id[initial_chap]
+page_title = f"Chương {initial_chap} | {novel_id_to_title[curr_nov_id]}"
 st.set_page_config(page_title=page_title, page_icon="📖", layout="centered", initial_sidebar_state="collapsed")
 
 # ==============================================================================
-# 4. TRÌNH ĐỌC SÁCH MOBILE (FIXED V2)
+# 4. TRÌNH ĐỌC SÁCH MOBILE (V3 FIXED)
 # ==============================================================================
 def render_instant_reader_mobile(pages_json, font_size_px):
-    """
-    [FIX]:
-    1. Nhận font_size_px từ sidebar để chỉnh cỡ chữ.
-    2. #book-content: overflow-y: auto -> Cho phép cuộn nếu chữ bị dài quá khung.
-    3. Ẩn thanh cuộn để giữ thẩm mỹ.
-    """
-    
     html_code = f"""
     <style>
-        /* Ẩn bớt UI Streamlit */
-        header {{visibility: hidden;}}
-        footer {{visibility: hidden;}}
-        .block-container {{
-            padding: 0 !important;
-            margin: 0 !important;
-            max-width: 100%;
-        }}
-
-        /* CONTAINER CHÍNH */
+        header {{visibility: hidden;}} footer {{visibility: hidden;}}
+        .block-container {{padding: 0 !important; margin: 0 !important; max-width: 100%;}}
+        
         #book-container {{
-            position: relative;
-            width: 100%;
-            height: 85vh; /* Chiều cao cố định */
-            background-color: #fdf6e3;
-            color: #2c2c2c;
-            border-radius: 12px;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
-            display: flex;
-            flex-direction: column;
-            overflow: hidden; 
-            margin-bottom: 20px;
+            position: relative; width: 100%; height: 85vh;
+            background-color: #fdf6e3; color: #2c2c2c;
+            border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+            display: flex; flex-direction: column; overflow: hidden; margin-bottom: 20px;
         }}
-
-        /* HEADER */
         #book-header {{
-            height: 35px;
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            justify-content: flex-end;
-            padding-right: 20px;
-            font-size: 13px;
-            color: #8a7f70;
-            border-bottom: 1px solid rgba(0,0,0,0.05);
-            background: #f7efd2;
+            height: 35px; flex-shrink: 0; display: flex; align-items: center; justify-content: flex-end;
+            padding-right: 20px; font-size: 13px; color: #8a7f70;
+            border-bottom: 1px solid rgba(0,0,0,0.05); background: #f7efd2;
         }}
-
-        /* NỘI DUNG */
         #book-content {{
-            flex: 1; 
-            padding: 20px 20px;
-            
-            font-family: 'Merriweather', 'Times New Roman', serif;
-            font-size: {font_size_px}px; /* [FIX SIZE] Dùng biến từ Python */
-            line-height: 1.6;
-            text-align: justify;
-            
-            /* [FIX CUT-OFF] Cho phép cuộn nếu tràn, nhưng ẩn thanh cuộn */
-            overflow-y: auto; 
-            scrollbar-width: none; /* Firefox */
-            -ms-overflow-style: none;  /* IE */
+            flex: 1; padding: 20px; font-family: 'Merriweather', serif;
+            font-size: {font_size_px}px; line-height: 1.6; text-align: justify;
+            overflow-y: auto; scrollbar-width: none; -ms-overflow-style: none;
         }}
-        #book-content::-webkit-scrollbar {{ display: none; }} /* Chrome */
-
+        #book-content::-webkit-scrollbar {{ display: none; }}
         #book-content p {{ margin-bottom: 1.2em; text-indent: 1.5em; }}
-
-        /* TOUCH ZONES */
-        .touch-zone {{
-            position: absolute;
-            top: 40px; 
-            bottom: 0;
-            z-index: 100;
-            cursor: pointer;
-        }}
+        
+        .touch-zone {{ position: absolute; top: 40px; bottom: 0; z-index: 100; cursor: pointer; }}
         #zone-left {{ left: 0; width: 35%; }}
         #zone-right {{ right: 0; width: 65%; }}
         .touch-zone:active {{ background-color: rgba(0,0,0,0.03); }}
-
-        /* End Screen */
-        #end-msg {{
-            display: none;
-            height: 100%;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-            text-align: center;
-            color: #555;
-            animation: fadeIn 0.3s;
-        }}
-        @keyframes fadeIn {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
         
-        #end-msg h2 {{ color: #d35400; margin-bottom: 10px; }}
-        #end-msg .icon {{ font-size: 50px; margin-bottom: 20px; }}
-
+        #end-msg {{
+            display: none; height: 100%; flex-direction: column;
+            align-items: center; justify-content: center; padding: 20px; text-align: center; color: #555;
+        }}
+        #end-msg h2 {{ color: #d35400; }}
     </style>
 
     <div id="book-container">
-        <div id="book-header">
-            Trang <span id="pg-curr" style="margin: 0 4px; font-weight: bold;">1</span> / <span id="pg-total">1</span>
-        </div>
-        
+        <div id="book-header">Trang <span id="pg-curr" style="margin:0 4px;font-weight:bold;">1</span>/<span id="pg-total">1</span></div>
         <div id="book-content">Loading...</div>
-        
-        <div id="end-msg">
-            <div class="icon">📖✨</div>
-            <h2>Hết chương!</h2>
-            <p>Vuốt xuống dưới để sang chương tiếp theo 👇</p>
-        </div>
-
+        <div id="end-msg"><div style="font-size:50px;">📖✨</div><h2>Hết chương!</h2><p>Vuốt xuống để sang chương mới 👇</p></div>
         <div id="zone-left" class="touch-zone" onclick="prevPage()"></div>
         <div id="zone-right" class="touch-zone" onclick="nextPage()"></div>
     </div>
-
     <script>
         const pages = {pages_json};
-        let curIdx = 0;
-        const total = pages.length;
-        
-        const elContent = document.getElementById('book-content');
-        const elCurr = document.getElementById('pg-curr');
-        const elTotal = document.getElementById('pg-total');
-        const elEnd = document.getElementById('end-msg');
-
-        elTotal.innerText = total;
-
+        let curIdx = 0; const total = pages.length;
+        const elC = document.getElementById('book-content'), elCur = document.getElementById('pg-curr'), elTot = document.getElementById('pg-total'), elE = document.getElementById('end-msg');
+        elTot.innerText = total;
         function render() {{
-            if (curIdx >= total) {{
-                elContent.style.display = 'none';
-                elEnd.style.display = 'flex';
-                elCurr.innerText = "End";
-                return;
-            }}
-            elContent.style.display = 'block';
-            elEnd.style.display = 'none';
-            elContent.innerHTML = pages[curIdx];
-            elCurr.innerText = curIdx + 1;
-            elContent.scrollTop = 0;
+            if (curIdx >= total) {{ elC.style.display='none'; elE.style.display='flex'; elCur.innerText='End'; return; }}
+            elC.style.display='block'; elE.style.display='none';
+            elC.innerHTML = pages[curIdx]; elCur.innerText = curIdx + 1; elC.scrollTop = 0;
         }}
-
-        function nextPage() {{
-            if (curIdx < total) {{
-                curIdx++;
-                render();
-            }}
-        }}
-        function prevPage() {{
-            if (curIdx > 0) {{
-                curIdx--;
-                render();
-            }}
-        }}
+        function nextPage() {{ if(curIdx<total) {{ curIdx++; render(); }} }}
+        function prevPage() {{ if(curIdx>0) {{ curIdx--; render(); }} }}
         render();
     </script>
     """
-    st.components.v1.html(html_code, height=850) 
-
+    st.components.v1.html(html_code, height=850)
 
 # ==============================================================================
-# 5. SIDEBAR
+# 5. SIDEBAR (MENU) - FULL SYNC
 # ==============================================================================
 with st.sidebar:
     st.header("📚 Tủ Sách")
-    novel_options = list(novel_slug_to_id.keys())
-    try: idx = novel_options.index(current_slug)
-    except: idx = 0
-    st.selectbox("Truyện:", options=novel_options, format_func=lambda x: novel_id_to_title[novel_slug_to_id[x]], index=idx, key="sb_novel_select", on_change=change_novel)
+    
+    # [SYNC FIX 1] Đồng bộ Dropdown Truyện
+    # Tìm index của truyện hiện tại trong danh sách options
+    curr_novel_slug = novel_id_to_slug[st.session_state['current_novel_id']]
+    try:
+        novel_list_idx = novel_slugs_list.index(curr_novel_slug)
+    except ValueError: 
+        novel_list_idx = 0
+        
+    st.selectbox(
+        "Truyện:", 
+        options=novel_slugs_list, 
+        index=novel_list_idx,  # <-- Tự động nhảy về đúng truyện
+        format_func=lambda x: novel_id_to_title[novel_slug_to_id[x]], 
+        key="sb_novel_select", 
+        on_change=change_novel
+    )
 
     st.divider()
     st.header("⚙️ Cài Đặt")
-    is_editor_mode = st.toggle("🛠️ Chế độ Biên Tập", value=False)
+    is_editor = st.toggle("🛠️ Biên Tập", value=False)
     
-    if not is_editor_mode:
-        reading_mode = st.radio("Chế độ đọc:", ["📖 Lật trang (Mobile)", "📜 Cuộn dọc (Web)"], index=0)
-        
-        # [FIX] CÔNG CỤ CHỈNH SIZE CHỮ (ĐÃ QUAY LẠI)
-        font_size = st.slider("Cỡ chữ (px):", 14, 26, 19)
+    if not is_editor:
+        read_mode = st.radio("Chế độ:", ["📖 Lật trang (Mobile)", "📜 Cuộn dọc (Web)"], index=0)
+        font_sz = st.slider("Cỡ chữ:", 14, 26, 19)
+
+    st.write("---")
+    st.write("📍 **Điều hướng chương:**")
+    
+    # [SYNC FIX 2] Đồng bộ Dropdown Chương
+    try:
+        chap_list_idx = list_indexes.index(st.session_state['current_chap_idx'])
+    except ValueError: 
+        chap_list_idx = 0
 
     col_i, col_b = st.columns([3, 1])
-    with col_i: input_idx = st.number_input("Chương số", 1, len(list_indexes), current_chap_idx, label_visibility="collapsed")
-    with col_b: 
-        if st.button("Go"): change_chap(input_idx); st.rerun()
-            
-    st.selectbox("Danh sách:", list_indexes, index=list_indexes.index(current_chap_idx), 
-                 format_func=lambda x: f"Chương {x}: {chap_idx_to_title.get(x, '')[:20]}...",
-                 key="sb_chap_select", on_change=lambda: change_chap(st.session_state.sb_chap_select))
+    with col_i:
+        # Ô nhập số cũng phải lấy giá trị từ session_state
+        input_val = st.number_input("Nhập số:", value=st.session_state['current_chap_idx'], label_visibility="collapsed")
+    with col_b:
+        if st.button("Go"):
+            change_chap(input_val)
+            st.rerun()
+
+    st.selectbox(
+        "Chọn chương:", 
+        options=list_indexes, 
+        index=chap_list_idx, # <-- Tự động nhảy về đúng chương
+        format_func=lambda x: f"Chương {x}: {chap_idx_to_title.get(x, '')[:20]}...",
+        key="sb_chap_select", 
+        on_change=lambda: change_chap(st.session_state.sb_chap_select)
+    )
 
 # ==============================================================================
 # 6. MAIN UI
@@ -362,70 +296,46 @@ data = cursor.fetchone()
 
 if data:
     title, raw, edited_db = data
-    final_text_raw = edited_db if (edited_db and len(edited_db) > 50) else raw
-    final_text = clean_content(final_text_raw)
+    final_text = clean_content(edited_db if (edited_db and len(edited_db) > 50) else raw)
 
-    if not is_editor_mode:
+    if not is_editor:
         st.markdown(f"<h4 style='text-align: center; color: #888; margin-top: -20px; margin-bottom: 5px;'>{title}</h4>", unsafe_allow_html=True)
+        
+        # Tìm vị trí hiện tại trong danh sách
+        curr_pos = list_indexes.index(st.session_state['current_chap_idx'])
+        prev_disabled = (curr_pos == 0)
+        next_disabled = (curr_pos == len(list_indexes) - 1)
 
-        # === MODE 1: LẬT TRANG MOBILE ===
-        if "Lật trang" in reading_mode:
-            # Cắt text (Giảm word count xuống 150 để tránh cắt chữ)
+        # MODE 1: MOBILE FLIP
+        if "Lật trang" in read_mode:
             pages_json = paginate_text_to_json(final_text, words_per_page=150)
-            
-            # [FIX] Truyền font_size vào hàm render
-            render_instant_reader_mobile(pages_json, font_size)
+            render_instant_reader_mobile(pages_json, font_sz)
 
             st.markdown("---")
             c_prev, c_next = st.columns(2)
             
-            # [FIX] LOGIC CHUYỂN CHƯƠNG THÔNG MINH
-            # Tìm vị trí hiện tại trong danh sách
-            curr_pos = list_indexes.index(current_chap_idx)
-            
-            # Nút Lùi
-            prev_disabled = (curr_pos == 0) # Nếu là phần tử đầu tiên
             if c_prev.button("⬅️ Chương Trước", disabled=prev_disabled, use_container_width=True):
-                prev_idx = list_indexes[curr_pos - 1]
-                change_chap(prev_idx); st.rerun()
+                change_chap(list_indexes[curr_pos - 1]); st.rerun()
                 
-            # Nút Tiến
-            next_disabled = (curr_pos == len(list_indexes) - 1) # Nếu là phần tử cuối
             if c_next.button("CHƯƠNG SAU ⏩", type="primary", disabled=next_disabled, use_container_width=True):
-                next_idx = list_indexes[curr_pos + 1]
-                change_chap(next_idx); st.rerun()
+                change_chap(list_indexes[curr_pos + 1]); st.rerun()
 
-        # === MODE 2: CUỘN DỌC WEB ===
+        # MODE 2: WEB SCROLL
         else:
-            # CSS cho mode cuộn cũng nhận font_size
-            st.markdown(f"""
-            <style>
-                .paper-scroll {{
-                    background-color: #fdf6e3; color: #2c2c2c; padding: 30px; border-radius: 8px; 
-                    font-family: 'Merriweather', serif; font-size: {font_size}px; line-height: 1.6; text-align: justify;
-                }}
-                .paper-scroll p {{ margin-bottom: 1.5em; text-indent: 2em; }}
-            </style>
-            """, unsafe_allow_html=True)
-
+            st.markdown(f"""<style>.paper-scroll {{ background:#fdf6e3;color:#2c2c2c;padding:30px;border-radius:8px;font-family:'Merriweather',serif;font-size:{font_sz}px;line-height:1.6;text-align:justify; }}</style>""", unsafe_allow_html=True)
             paragraphs = final_text.replace('\\n', '\n').split('\n')
             full_html = "".join([f"<p>{p.strip()}</p>" for p in paragraphs if p.strip()])
-            
             st.markdown(f"""<div class="paper-scroll">{full_html}</div>""", unsafe_allow_html=True)
             
             st.write("")
             c4, c5 = st.columns(2)
-            
-            # Logic chuyển chương cũng áp dụng fix danh sách
-            curr_pos = list_indexes.index(current_chap_idx)
-            
-            if c4.button("⬅️ Chương Trước", disabled=(curr_pos==0), use_container_width=True): 
+            if c4.button("⬅️ Trước", disabled=prev_disabled, use_container_width=True): 
                 change_chap(list_indexes[curr_pos - 1]); st.rerun()
-            if c5.button("Chương Sau ➡️", disabled=(curr_pos==len(list_indexes)-1), use_container_width=True): 
+            if c5.button("Sau ➡️", disabled=next_disabled, use_container_width=True): 
                 change_chap(list_indexes[curr_pos + 1]); st.rerun()
 
     else:
-        # MODE BIÊN TẬP
+        # EDIT MODE
         st.title(f"🛠️ Sửa: {title}")
         cL, cR = st.columns(2)
         with cL: st.text_area("Gốc", value=clean_content(raw), height=600, disabled=True)
