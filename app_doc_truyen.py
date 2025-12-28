@@ -414,7 +414,7 @@ QUY TẮC SỐNG CÒN (Bắt buộc tuân thủ):
             # Nút Copy Prompt trực tiếp trong HTML để vượt qua cơ chế bảo mật iframe
             st.components.v1.html(f"""
             <button id="btn-copy" style="width: 100%; height: 45px; background-color: #2e7d32; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; font-family: sans-serif;">
-                📋 Copy Prompt & Nội dung gốc
+                📋 Copy
             </button>
             <textarea id="hidden-text" style="display:none;">{escaped_prompt}</textarea>
             <script>
