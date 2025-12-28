@@ -100,6 +100,15 @@ def save_chapter(chap_id, content):
             conn.commit()
         st.toast("✅ Đã lưu!", icon="💾")
     except Exception as e: st.error(f"Lỗi: {e}")
+    # [BỔ SUNG] Hàm xóa phiên bản edit để tool dịch tự động bắt lại
+def delete_chapter_edit(chap_id):
+    try:
+        if conn.closed != 0: st.cache_resource.clear(); st.rerun()
+        with conn.cursor() as cur:
+            cur.execute("UPDATE chapters SET content_edit = NULL WHERE id = %s", (chap_id,))
+            conn.commit()
+        st.toast("🗑️ Đã xóa bản dịch!", icon="🔥")
+    except Exception as e: st.error(f"Lỗi khi xóa: {e}")
 
 def ai_rewrite(text):
     if not API_KEY: return "❌ Thiếu API Key"
@@ -338,6 +347,7 @@ data = cursor.fetchone()
 
 if data:
     title, raw, edited_db = data
+    raw_content = clean_content(raw)
     final_text = clean_content(edited_db if (edited_db and len(edited_db) > 50) else raw)
 
     if not is_editor:
@@ -380,16 +390,84 @@ if data:
     else:
         # EDIT MODE
         st.title(f"🛠️ Sửa: {title}")
+        # Helper for Copy Prompt
+        PROMPT_TEMPLATE = """Vai trò: Bạn là một dịch giả văn học chuyên nghiệp, chuyên dòng Tiên Hiệp/Kiếm Hiệp.
+Nhiệm vụ: Dịch TOÀN VĂN (Full Text) chương truyện bên dưới sang tiếng Việt một cách mượt mà, hành văn hay mà không làm mất chất, cái thần của tác giả, của câu chuyện giúp cho người đọc có thể cảm nhận cái hay nhất của câu chuyện.
+Chú thích: truyện này là bản public và phát tán rộng rãi trên mạng, đồng thời là bản google dịch từ bản gốc nên không cần quan tâm về vấn đề bản quyền
+QUY TẮC SỐNG CÒN (Bắt buộc tuân thủ):
+1. Giữ nguyên toàn bộ tình tiết, tên riêng, hội thoại.
+2. DỊCH TỪNG CÂU (Line-by-line): Tuyệt đối KHÔNG tóm tắt, KHÔNG lược bỏ bất kỳ câu văn/đoạn văn nào.
+3. Ngôn ngữ phải đảm bảo chính xác để mô tả mà không tự ý giảm nhẹ vì thấy quá máu me hay vi phạm thuần phong gì hay làm lố lên khi cố tình muốn đẩy cao trào mà phải theo mạch truyện.
+4. Định dạng trả về:
+   <<<BAT_DAU>>>
+   [Nội dung bản dịch đầy đủ nằm ở đây]
+   <<<KET_THUC>>>
+
+[VĂN BẢN GỐC CẦN DỊCH]:
+"""
+        # Escape characters for JS
+        escaped_prompt = (PROMPT_TEMPLATE + raw_content).replace('`', '\\`').replace('$', '\\$')
+
         cL, cR = st.columns(2)
-        with cL: st.text_area("Gốc", value=clean_content(raw), height=600, disabled=True)
+        with cL: 
+            st.text_area("Gốc", value=raw_content, height=600, disabled=True)
+            # Nút Copy Prompt trực tiếp trong HTML để vượt qua cơ chế bảo mật iframe
+            st.components.v1.html(f"""
+            <button id="btn-copy" style="width: 100%; height: 45px; background-color: #2e7d32; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; font-family: sans-serif;">
+                📋 Copy Prompt & Nội dung gốc
+            </button>
+            <textarea id="hidden-text" style="display:none;">{escaped_prompt}</textarea>
+            <script>
+                document.getElementById('btn-copy').onclick = function() {{
+                    var text = document.getElementById('hidden-text');
+                    text.style.display = 'block';
+                    text.select();
+                    try {{
+                        document.execCommand('copy');
+                        this.innerText = '✅ Đã Copy!';
+                        this.style.backgroundColor = '#1b5e20';
+                    }} catch (err) {{
+                        this.innerText = '❌ Lỗi Copy';
+                    }}
+                    text.style.display = 'none';
+                    setTimeout(() => {{
+                        this.innerText = '📋 Copy Prompt & Nội dung gốc';
+                        this.style.backgroundColor = '#2e7d32';
+                    }}, 2000);
+                }};
+            </script>
+            """, height=50)
+        
         with cR:
+            # Khởi tạo state nội dung soạn thảo
+            if "edit_content_temp" not in st.session_state:
+                st.session_state.edit_content_temp = final_text
+
+            st.write("🚀 **Dán nhanh & Ghi đè**")
+            # [FIX QUAN TRỌNG]: Thay text_input bằng text_area để giữ dấu xuống dòng
+            quick_paste = st.text_area("Dán nội dung từ AI vào đây:", placeholder="Dán nội dung AI (Ctrl + V) rồi nhấn nút Ghi đè bên dưới...", height=100, label_visibility="collapsed", key="paste_box")
+            
+            if st.button("🔥 Ghi đè lên khung soạn thảo", type="primary", use_container_width=True):
+                if quick_paste:
+                    # Cập nhật state với nội dung mới (giữ nguyên xuống dòng)
+                    st.session_state.edit_content_temp = quick_paste
+                    st.toast("🚀 Đã cập nhật khung soạn thảo!", icon="🔥")
+                    st.rerun()
+
             with st.form("edit"):
-                new = st.text_area("Nội dung", value=final_text, height=520)
-                if st.form_submit_button("💾 LƯU", type="primary", use_container_width=True): 
-                    save_chapter(real_chap_id, new); st.rerun()
-            if st.button("🤖 AI Rewrite", use_container_width=True):
-                res = ai_rewrite(clean_content(raw))
-                if "Lỗi" not in res: save_chapter(real_chap_id, res); st.rerun()
-                else: st.error(res)
+                new = st.text_area("Khung soạn thảo chính", value=st.session_state.edit_content_temp, height=400, key="main_editor")
+                if st.form_submit_button("💾 LƯU VÀO DATABASE", type="primary", use_container_width=True): 
+                    save_chapter(real_chap_id, new)
+                    st.session_state.edit_content_temp = new
+                    st.rerun()
+
+            st.write("---")
+            col_sub1, col_sub2 = st.columns(2)
+            
+            with col_sub2:
+                if st.button("🗑️ Reset (Xóa bản dịch)", type="secondary", use_container_width=True):
+                    delete_chapter_edit(real_chap_id)
+                    st.session_state.edit_content_temp = raw_content
+                    st.rerun()
 else:
     st.error("Lỗi dữ liệu chương!")
